@@ -1,0 +1,264 @@
+variables:
+  - name: DOCKER_BUILDKIT
+    value: 1
+  - name: APP_NAME
+    value: kiwitcms
+  
+  - name: STOP_GRACE_PERIOD
+    value: 30s
+  - name: UPDATE_DELAY
+    value: 20s
+  - name: HEALTH_START_PERIOD
+    value: 60s
+  - name: UPDATE_ARG
+    value: --with-registry-auth --stop-grace-period $(STOP_GRACE_PERIOD) --update-delay $(UPDATE_DELAY) --health-start-period $(HEALTH_START_PERIOD) --label-add 'lm.project=$(System.TeamProject)' --label-add 'lm.release.definition.name=$(Build.DefinitionName)' --label-add 'lm.release.name=$(Build.DefinitionName)'
+  
+  - name: REGISRTY_ADDRESS
+    value: images.azurecr.io
+  - name: IMAGE_TAG
+    value: $(Build.SourceBranchName)-$(Build.BuildId)
+#  - name: IMAGE_TAG_STAGING
+#    value: $(Build.SourceBranchName)-stage
+#  - name: IMAGE_TAG_PRODUCTION
+#    value: $(Build.SourceBranchName)
+  - name: IMAGE
+    value: $(REGISRTY_ADDRESS)/$(APP_NAME):$(IMAGE_TAG)
+#  - name: IMAGE_STAGING
+#    value: $(REGISRTY_ADDRESS)/$(APP_NAME):$(IMAGE_TAG_STAGING)
+#  - name: IMAGE_PRODUCTION
+#    value: $(REGISRTY_ADDRESS)/$(APP_NAME):$(IMAGE_TAG_PRODUCTION)
+  
+#  - name: HasVersion
+#    value: ${{ startsWith(variables['build.sourceBranch'], 'refs/tags/v') }}
+#  - name: IsReleaseCandidate
+#    value: ${{ and(variables['HasVersion'], contains(variables['build.sourceBranch'], '-rc')) }}
+  - name: IsDevelop
+    value: ${{ startsWith(variables['build.sourceBranchName'], 'master') }}
+
+  - group: Slack
+
+pool:
+  name: LM-BUILD-DP
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - master
+    - develop
+    - release
+
+  tags:
+    include:
+    - v*
+
+# BUILD
+stages:
+- stage: Build
+  condition: and(succeeded(),  not(eq(variables['Build.Reason'], 'PullRequest')))
+  jobs:
+    - job: Docker
+      steps:
+        - task: Docker@2
+          displayName: Docker Build
+          inputs:
+            containerRegistry: 'images'
+            repository: 'kiwiTCMS'
+            command: 'build'
+            Dockerfile: 'Dockerfile'
+            buildContext: './'
+            tags: |
+              $(IMAGE_TAG)
+        - task: Docker@2
+          displayName: Docker Push
+          inputs:
+            containerRegistry: 'images'
+            repository: 'kiwiTCMS'
+            command: 'push'
+            tags: |
+              $(IMAGE_TAG)
+
+# DEV
+- stage: Dev
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['IsDevelop'], true))
+  jobs:
+  - deployment: Release
+    pool:
+      name: LM-SWARM-DEV
+    displayName: Release
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - bash: docker pull $(IMAGE)
+            displayName: Pull
+          - bash: docker service update $(APP_NAME) --image $(IMAGE) $(UPDATE_ARG)
+            displayName: Update
+
+# # DEMO
+# - stage: Demo
+#   dependsOn: Build
+#   condition: and(succeeded(), eq(variables.IsReleaseCandidate, true))
+#   jobs:
+#   - deployment: Release
+#     pool:
+#       name: LM-SWARM-DEMO
+#     displayName: Release Demo
+#     environment: 'demo'
+#     strategy:
+#       runOnce:
+#         deploy:
+#           steps:
+#           - bash: docker pull $(IMAGE)
+#             displayName: Pull
+#           - bash: docker service update $(APP_NAME) --image $(IMAGE) $(UPDATE_ARG)
+#             displayName: Update
+
+#   - job: Notification
+#     dependsOn: Release
+#     steps:
+#     - task: SlackNotification@6
+#       displayName: Notification
+#       inputs:
+#         SlackApiToken: '$(slack_auth)'
+#         NotificationType: 'ChatMessage'
+#         MessageAuthor: 'Visual Studio Team Services'
+#         Channel: '#portals_team_dev'
+#         Color: '#008000'
+#         Message: '*<https://dev.azure.com/lmnext/LM%20Portals/_build/results?buildId=$(Build.BuildId)&view=results|$(Build.DefinitionName)>*'
+#         Title: |
+#           - Deployment to $(System.StageDisplayName) environment was successful
+#           - Triggered by $(Build.RequestedFor)
+#           - Build Number $(Build.BuildNumber)
+#           - Version $(Build.SourceBranchName)
+#         FooterText: 'From Visual Studio Team Services'
+
+# # STAGING
+# - stage: Staging
+#   dependsOn: Build
+#   condition: and(succeeded(), eq(variables['HasVersion'], true), eq(variables.IsReleaseCandidate, false))
+#   jobs:
+#     - job: waitForValidationStage
+#       displayName: Wait for external validation  
+#       pool: server    
+#       timeoutInMinutes: 4320 # job times out in 3 days
+#       steps:   
+#       - task: ManualValidation@0
+#         timeoutInMinutes: 1440 # task times out in 1 day
+#         inputs:
+#           notifyUsers: |
+#             - yuliian@leadsmarket.com
+#             - denis.p@leadsmarket.com
+#           instructions: 'Please validate the build configuration and resume'
+#           onTimeout: 'reject'
+      
+#     - job: Tag
+#       dependsOn: waitForValidationStage
+#       steps:
+#       - bash: docker pull $(IMAGE)
+#         displayName: Pull
+#       - bash: docker tag $(IMAGE) $(IMAGE_STAGING)
+#         displayName: Tag
+#       - bash: docker push $(IMAGE_STAGING)
+#         displayName: Push
+
+#     - deployment: Release
+#       dependsOn: Tag
+#       pool:
+#         name: LM-SWARM
+#       displayName: Release Staging
+#       environment: 'Stage'
+#       strategy:
+#         runOnce:
+#           deploy:
+#             steps:
+#             - bash: docker pull $(IMAGE_STAGING)
+#               displayName: Pull
+#             - bash: docker service update leadsmarket-front-stage --image $(IMAGE_STAGING) $(UPDATE_ARG)
+#               displayName: Update
+
+#     - job: Notification
+#       dependsOn: Release
+#       steps:
+#       - task: SlackNotification@6
+#         displayName: Notification
+#         inputs:
+#           SlackApiToken: '$(slack_auth)'
+#           NotificationType: 'ChatMessage'
+#           MessageAuthor: 'Visual Studio Team Services'
+#           Channel: '#portals_team_dev'
+#           Color: '#808000'
+#           Message: '*<https://dev.azure.com/lmnext/LM%20Portals/_build/results?buildId=$(Build.BuildId)&view=results|$(Build.DefinitionName)>*'
+#           Title: |
+#             - Deployment to $(System.StageDisplayName) environment was successful
+#             - Triggered by $(Build.RequestedFor)
+#             - Build Number $(Build.BuildNumber)
+#             - Version $(Build.SourceBranchName)
+#           FooterText: 'From Visual Studio Team Services'
+
+# # PROD
+# - stage: Prod
+#   dependsOn: Staging
+#   condition: and(succeeded(), eq(variables['HasVersion'], true), eq(variables.IsReleaseCandidate, false))
+#   jobs:
+#     - job: waitForValidationProd
+#       displayName: Wait for external validation  
+#       pool: server    
+#       timeoutInMinutes: 4320 # job times out in 3 days
+#       steps:   
+#       - task: ManualValidation@0
+#         timeoutInMinutes: 1440 # task times out in 1 day
+#         inputs:
+#           notifyUsers: |
+#             - yuliian@leadsmarket.com
+#             - denis.p@leadsmarket.com
+#           instructions: 'Please validate the build configuration and resume'
+#           onTimeout: 'reject'
+
+      
+#     - job: Tag
+#       dependsOn: waitForValidationProd
+#       steps:
+#       - bash: docker pull $(IMAGE_STAGING)
+#         displayName: Pull
+#       - bash: docker tag $(IMAGE_STAGING) $(IMAGE_PRODUCTION)
+#         displayName: Tag
+#       - bash: docker push $(IMAGE_PRODUCTION)
+#         displayName: Push
+          
+
+#     - deployment: Release
+#       dependsOn: Tag
+#       pool:
+#         name: LM-SWARM
+#       displayName: Release Production
+#       environment: 'Production'
+#       strategy:
+#         runOnce:
+#           deploy:
+#             steps:
+#             - bash: docker pull $(IMAGE_PRODUCTION)
+#               displayName: Pull
+#             - bash: docker service update leadsmarket-front --image $(IMAGE_PRODUCTION) $(UPDATE_ARG)
+#               displayName: Update
+
+#     - job: Notification
+#       dependsOn: Release
+#       steps:
+#       - task: SlackNotification@6
+#         displayName: Notification
+#         inputs:
+#           SlackApiToken: '$(slack_auth)'
+#           NotificationType: 'ChatMessage'
+#           MessageAuthor: 'Visual Studio Team Services'
+#           Channel: '#portals_team_dev'
+#           Color: '#800000'
+#           Message: '*<https://dev.azure.com/lmnext/LM%20Portals/_build/results?buildId=$(Build.BuildId)&view=results|$(Build.DefinitionName)>*'
+#           Title: |
+#             - Deployment to $(System.StageDisplayName) environment was successful
+#             - Triggered by $(Build.RequestedFor)
+#             - Build Number $(Build.BuildNumber)
+#             - Version $(Build.SourceBranchName)
+#           FooterText: 'From Visual Studio Team Services'
