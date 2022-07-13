@@ -41,16 +41,16 @@ pool:
   name: LM-BUILD-DP
 
 trigger:
-  batch: true
+#  batch: true
   branches:
     include:
     - master
-    - develop
-    - release
+#    - develop
+#    - release
 
-  tags:
-    include:
-    - v*
+#  tags:
+#    include:
+#    - v*
 
 # BUILD
 stages:
